@@ -272,7 +272,7 @@ class GemmaAttention(nn.Module):
         )
          # FIX ATTENTION LENGTH MISMATCH WITH SEQ LENGTH -> NOT AN ISSUE FOR NOW BECAUSE PALIGEMMA DELIBERATELY DOES NOT APPLY CAUSAL MASK ON INPUT
         # attn_weights = attn_weights + attention_mask
-        attn_logits = torch.softmax(attn_weights, dim=-1)
+        # attn_logits = torch.softmax(attn_weights, dim=-1)
 
 
         # Apply the softmax
@@ -295,7 +295,7 @@ class GemmaAttention(nn.Module):
         # Multiply by W_o. [Batch_Size, Seq_Len_Q, Hidden_Size]
         attn_output = self.o_proj(attn_output)
 
-        return attn_output, attn_weights, kv_cache, attn_logits
+        return attn_output, attn_weights, kv_cache
 
 class GemmaDecoderLayer(nn.Module):
 
@@ -321,7 +321,7 @@ class GemmaDecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
 
         # [Batch_Size, Seq_Len, Hidden_Size]
-        hidden_states, self_attn_weights, present_kv_cache, relation_vis_text = self.self_attn(
+        hidden_states, self_attn_weights, present_kv_cache = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -344,7 +344,6 @@ class GemmaDecoderLayer(nn.Module):
         outputs += (self_attn_weights,)
 
         outputs += (present_kv_cache,)
-        outputs += (relation_vis_text, )
 
         return outputs
 
@@ -381,7 +380,7 @@ class GemmaModel(nn.Module):
         normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
         hidden_states = hidden_states * normalizer
 
-        K = 10
+        K = 3
         ratio = 0.5
         _, seq_length, _ = hidden_states.shape
 
