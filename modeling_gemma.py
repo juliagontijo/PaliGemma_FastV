@@ -264,7 +264,10 @@ class GemmaAttention(nn.Module):
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
         assert attention_mask is not None
-        attn_weights = attn_weights + attention_mask
+         # FIX ATTENTION LENGTH MISMATCH WITH SEQ LENGTH -> NOT AN ISSUE FOR NOW BECAUSE PALIGEMMA DELIBERATELY DOES NOT APPLY CAUSAL MASK ON INPUT
+        # attn_weights = attn_weights + attention_mask
+        attn_logits = torch.softmax(attn_weights, dim=-1)
+
 
         # Apply the softmax
         # [Batch_Size, Num_Heads_Q, Seq_Len_Q, Seq_Len_KV]
@@ -286,7 +289,7 @@ class GemmaAttention(nn.Module):
         # Multiply by W_o. [Batch_Size, Seq_Len_Q, Hidden_Size]
         attn_output = self.o_proj(attn_output)
 
-        return attn_output, attn_weights
+        return attn_output, attn_weights, kv_cache, attn_logits
 
 class GemmaDecoderLayer(nn.Module):
 
@@ -312,7 +315,7 @@ class GemmaDecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
 
         # [Batch_Size, Seq_Len, Hidden_Size]
-        hidden_states, _, = self.self_attn(
+        hidden_states, self_attn_weights, present_kv_cache, relation_vis_text = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -330,7 +333,14 @@ class GemmaDecoderLayer(nn.Module):
         # [Batch_Size, Seq_Len, Hidden_Size]
         hidden_states = residual + hidden_states
 
-        return hidden_states
+        outputs = (hidden_states,)
+
+        outputs += (self_attn_weights,)
+
+        outputs += (present_kv_cache,)
+        outputs += (relation_vis_text, )
+
+        return outputs
 
 class GemmaModel(nn.Module):
 
@@ -345,6 +355,7 @@ class GemmaModel(nn.Module):
             [GemmaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.last_attention = None
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -356,6 +367,7 @@ class GemmaModel(nn.Module):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         kv_cache: Optional[KVCache] = None,
+        image_shape = 224,
     ) -> torch.FloatTensor:
         # [Batch_Size, Seq_Len, Hidden_Size]
         hidden_states = inputs_embeds
@@ -363,14 +375,41 @@ class GemmaModel(nn.Module):
         normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
         hidden_states = hidden_states * normalizer
 
-        for decoder_layer in self.layers:
-            # [Batch_Size, Seq_Len, Hidden_Size]
-            hidden_states = decoder_layer(
-                hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                kv_cache=kv_cache,
-            )
+        K = 10
+        ratio = 0.5
+        _, seq_length, _ = hidden_states.shape
+
+        v_token_start = 0
+
+        for layer_idx, decoder_layer in enumerate(self.layers):
+            if layer_idx == K and seq_length > 1:
+                device = hidden_states.device
+                image_attention_score = self.last_attention.mean(dim=1)[0][-1][v_token_start:v_token_start+image_shape]
+                top_attention_rank_index = image_attention_score.topk(int(image_shape * ratio)).indices
+                keep_indexs = torch.cat((torch.arange(v_token_start,device=device), top_attention_rank_index, torch.arange(v_token_start+image_shape,seq_length,device=device)))
+                keep_indexs = keep_indexs.sort().values
+                hidden_states = hidden_states[:,keep_indexs,:]
+                if attention_mask is not None:
+                    attention_mask = attention_mask[:,:,:hidden_states.shape[1],:hidden_states.shape[1]]
+                position_ids = keep_indexs.unsqueeze(0)
+
+            if layer_idx == K-1:
+                # [Batch_Size, Seq_Len, Hidden_Size]
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    kv_cache=kv_cache,
+                )
+                self.last_attention = layer_outputs[1]
+
+            layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    kv_cache=kv_cache,
+                )
+        hidden_states = layer_outputs[0]
 
         # [Batch_Size, Seq_Len, Hidden_Size]
         hidden_states = self.norm(hidden_states)
@@ -399,6 +438,7 @@ class GemmaForCausalLM(nn.Module):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         kv_cache: Optional[KVCache] = None,
+        image_shape = 224,
     ) -> Tuple:
 
         # input_embeds: [Batch_Size, Seq_Len, Hidden_Size]
@@ -408,6 +448,7 @@ class GemmaForCausalLM(nn.Module):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             kv_cache=kv_cache,
+            image_shape = image_shape,
         )
 
         hidden_states = outputs
@@ -542,11 +583,14 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         # Merge the embeddings of the text tokens and the image tokens
         inputs_embeds, attention_mask, position_ids = self._merge_input_ids_with_image_features(image_features, inputs_embeds, input_ids, attention_mask, kv_cache)
         
+        image_shape = self.vision_tower.config.image_size
+
         outputs = self.language_model(
             attention_mask=attention_mask,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             kv_cache=kv_cache,
+            image_shape = image_shape,
         )
 
         return outputs
