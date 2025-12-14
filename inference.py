@@ -174,12 +174,12 @@ if __name__ == "__main__":
     HOME = "/Users/juliagontijolopes"
 
     model_path = f"{HOME}/Desktop/PaliGemma/paligemma-weights/paligemma-3b-pt-224"
-    prompt = "'What is the cat on top of '"
+    prompt = "'What is this monument called '"
      
-    image_file_path = f"{HOME}/Desktop/PaliGemma/images/blackcat.png"
-    # image_file_path = f"{HOME}/Desktop/PaliGemma/images/christ.jpg"
+    # image_file_path = f"{HOME}/Desktop/PaliGemma/images/blackcat.png"
+    image_file_path = f"{HOME}/Desktop/PaliGemma/images/christ.jpg"
 
-    max_tokens_to_generate = 200
+    max_tokens_to_generate = 100
     temperature = 0.8
     top_p = 0.9
     do_sample=False

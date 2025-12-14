@@ -263,7 +263,13 @@ class GemmaAttention(nn.Module):
         # Perform the calculation as usual, Q * K^T / sqrt(head_dim). Shape: [Batch_Size, Num_Heads_Q, Seq_Len_Q, Seq_Len_KV]
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
+        kv_len = kv_cache.num_items() + q_len
         assert attention_mask is not None
+        attention_mask = torch.zeros(
+            (1, 1, q_len, kv_len),
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
          # FIX ATTENTION LENGTH MISMATCH WITH SEQ LENGTH -> NOT AN ISSUE FOR NOW BECAUSE PALIGEMMA DELIBERATELY DOES NOT APPLY CAUSAL MASK ON INPUT
         # attn_weights = attn_weights + attention_mask
         attn_logits = torch.softmax(attn_weights, dim=-1)
@@ -380,34 +386,65 @@ class GemmaModel(nn.Module):
         _, seq_length, _ = hidden_states.shape
 
         v_token_start = 0
+        v_token_num = v_token_start + image_shape
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             if layer_idx == K and seq_length > 1:
+
+                print(f"\\nn######## Forward pass and pruning layer {layer_idx} ########")
+                print("\n-- BEFORE --")
+                print(f"Hidden state shape = {hidden_states.shape}")
+                print(f"Num of visual tokens = {v_token_num}")
+                print(f"Num of text tokens = {hidden_states.shape[1] - v_token_num}")
+                print(f"Attention mask shape = {attention_mask.shape}\n")
+                print("\n-- AFTER --")
+
+
                 device = hidden_states.device
-                image_attention_score = self.last_attention.mean(dim=1)[0][-1][v_token_start:v_token_start+image_shape]
-                top_attention_rank_index = image_attention_score.topk(int(image_shape * ratio)).indices
-                keep_indexs = torch.cat((torch.arange(v_token_start,device=device), top_attention_rank_index, torch.arange(v_token_start+image_shape,seq_length,device=device)))
+                image_attention_score = self.last_attention.mean(dim=1)[0][-1][v_token_start:v_token_num]
+                num_to_keep = int(image_shape * ratio)
+                top_attention_rank_index = image_attention_score.topk(num_to_keep).indices
+                keep_indexs = torch.cat((torch.arange(v_token_start,device=device), top_attention_rank_index, torch.arange(v_token_num,seq_length,device=device)))
                 keep_indexs = keep_indexs.sort().values
                 hidden_states = hidden_states[:,keep_indexs,:]
-                if attention_mask is not None:
-                    attention_mask = attention_mask[:,:,:hidden_states.shape[1],:hidden_states.shape[1]]
-                torch.arange(len(keep_indexs), device=device).unsqueeze(0)
+                # if attention_mask is not None:
+                #     attention_mask = attention_mask[:,:,:hidden_states.shape[1],:hidden_states.shape[1]]
+                position_ids = torch.arange(hidden_states.shape[1], device=device).unsqueeze(0)
 
-                for layer in range(len(kv_cache.key_cache)):
-                    kv_cache.key_cache[layer]  = kv_cache.key_cache[layer][:, :, keep_indexs, :]
-                    kv_cache.value_cache[layer] = kv_cache.value_cache[layer][:, :, keep_indexs, :]
+                # [Batch_Size, Seq_Len, Hidden_Size]
+                layer_outputs = decoder_layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        kv_cache=kv_cache,
+                    )
 
+                # for layer in range(len(kv_cache.key_cache)):
+                #     kv_cache.key_cache[layer]  = kv_cache.key_cache[layer][:, :, keep_indexs, :]
+                #     kv_cache.value_cache[layer] = kv_cache.value_cache[layer][:, :, keep_indexs, :]
 
-            # [Batch_Size, Seq_Len, Hidden_Size]
-            layer_outputs = decoder_layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    kv_cache=kv_cache,
-                )
+                # update
+                v_token_num = num_to_keep # B == 1
+                # print(layer_idx, v_token_num)
+                # t_token_start = v_token_start + v_token_num
+
+            else:
+                # [Batch_Size, Seq_Len, Hidden_Size]
+                layer_outputs = decoder_layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        kv_cache=kv_cache,
+                    )
             
             if layer_idx == K-1:
                 self.last_attention = layer_outputs[1]
+
+            print(f"Hidden state shape = {layer_outputs[0].shape}")
+            print(f"Num of visual tokens = {v_token_num}")
+            print(f"Num of text tokens = {layer_outputs[0].shape[1] - (v_token_num)}")
+            print(f"Attention mask shape = {attention_mask.shape}\n")
+            print(f"KV Cache shape = {layer_outputs[2].key_cache[-1].shape}\n")
 
         hidden_states = layer_outputs[0]
 
