@@ -380,23 +380,22 @@ class GemmaModel(nn.Module):
         normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
         hidden_states = hidden_states * normalizer
 
-        K = 3
-        ratio = 0.5
+        K = 10
+        ratio = 0.3
         _, seq_length, _ = hidden_states.shape
 
         v_token_start = 0
         v_token_num = v_token_start + image_shape
 
         for layer_idx, decoder_layer in enumerate(self.layers):
-            if layer_idx == K and seq_length > 1:
+            if layer_idx == K and hidden_states.shape[1] !=1:
 
                 print(f"\\nn######## Forward pass and pruning layer {layer_idx} ########")
                 print("\n-- BEFORE --")
                 print(f"Hidden state shape = {hidden_states.shape}")
                 print(f"Num of visual tokens = {v_token_num}")
                 print(f"Num of text tokens = {hidden_states.shape[1] - v_token_num}")
-                print(f"Attention mask shape = {attention_mask.shape}\n")
-                print("\n-- AFTER --")
+                print(f"Attention mask shape = {attention_mask.shape}")
 
 
                 device = hidden_states.device
@@ -410,8 +409,8 @@ class GemmaModel(nn.Module):
                 #     attention_mask = attention_mask[:,:,:hidden_states.shape[1],:hidden_states.shape[1]]
                 position_ids = torch.arange(hidden_states.shape[1], device=device).unsqueeze(0)
                 if attention_mask is not None:
-                    kv_len = kv_cache.num_items() + 1
-                    attention_mask = torch.zeros((1, 1, 1, kv_len), dtype=hidden_states.dtype, device=hidden_states.device)
+                    kv_len = hidden_states.shape[1]
+                    attention_mask = torch.zeros((1, 1, kv_len, kv_len), dtype=hidden_states.dtype, device=hidden_states.device)
 
                 # [Batch_Size, Seq_Len, Hidden_Size]
                 layer_outputs = decoder_layer(
@@ -424,6 +423,9 @@ class GemmaModel(nn.Module):
                 v_token_num = num_to_keep # B == 1
                 # print(layer_idx, v_token_num)
                 # t_token_start = v_token_start + v_token_num
+                print(f"Num of visual tokens = {v_token_num}")
+                print(f"Num of text tokens = {layer_outputs[0].shape[1] - (v_token_num)}\n")
+                print("\n-- AFTER --")
 
             else:
                 # [Batch_Size, Seq_Len, Hidden_Size]
@@ -438,9 +440,7 @@ class GemmaModel(nn.Module):
                 self.last_attention = layer_outputs[1]
 
             print(f"Hidden state shape = {layer_outputs[0].shape}")
-            print(f"Num of visual tokens = {v_token_num}")
-            print(f"Num of text tokens = {layer_outputs[0].shape[1] - (v_token_num)}")
-            print(f"Attention mask shape = {attention_mask.shape}\n")
+            print(f"Attention mask shape = {attention_mask.shape}")
             print(f"KV Cache shape = {layer_outputs[2].key_cache[-1].shape}\n")
 
         hidden_states = layer_outputs[0]
@@ -617,14 +617,15 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         # Merge the embeddings of the text tokens and the image tokens
         inputs_embeds, attention_mask, position_ids = self._merge_input_ids_with_image_features(image_features, inputs_embeds, input_ids, attention_mask, kv_cache)
         
-        image_shape = self.vision_tower.config.image_size
+        # image_shape = self.vision_tower.config.image_size
+        image_num_tokens = selected_image_feature.shape[1]
 
         outputs = self.language_model(
             attention_mask=attention_mask,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             kv_cache=kv_cache,
-            image_shape = image_shape,
+            image_shape = image_num_tokens,
         )
 
         return outputs
