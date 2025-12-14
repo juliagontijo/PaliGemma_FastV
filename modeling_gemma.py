@@ -409,6 +409,9 @@ class GemmaModel(nn.Module):
                 # if attention_mask is not None:
                 #     attention_mask = attention_mask[:,:,:hidden_states.shape[1],:hidden_states.shape[1]]
                 position_ids = torch.arange(hidden_states.shape[1], device=device).unsqueeze(0)
+                if attention_mask is not None:
+                    kv_len = kv_cache.num_items() + 1
+                    attention_mask = torch.zeros((1, 1, 1, kv_len), dtype=hidden_states.dtype, device=hidden_states.device)
 
                 # [Batch_Size, Seq_Len, Hidden_Size]
                 layer_outputs = decoder_layer(
@@ -417,11 +420,6 @@ class GemmaModel(nn.Module):
                         position_ids=position_ids,
                         kv_cache=kv_cache,
                     )
-
-                # for layer in range(len(kv_cache.key_cache)):
-                #     kv_cache.key_cache[layer]  = kv_cache.key_cache[layer][:, :, keep_indexs, :]
-                #     kv_cache.value_cache[layer] = kv_cache.value_cache[layer][:, :, keep_indexs, :]
-
                 # update
                 v_token_num = num_to_keep # B == 1
                 # print(layer_idx, v_token_num)
