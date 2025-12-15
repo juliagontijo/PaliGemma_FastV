@@ -34,53 +34,67 @@ def test_inference(
     temperature: float,
     top_p: float,
     do_sample: bool,
+    layer_to_prune: int,
+    ratios,
+    expected_answer: str,
 ):
     model_inputs = get_model_inputs(processor, prompt, image_file_path, device)
-    input_ids = model_inputs["input_ids"]
-    attention_mask = model_inputs["attention_mask"]
-    pixel_values = model_inputs["pixel_values"]
 
-    kv_cache = KVCache()
+    print(f"\n########## - FASTV IMPLEMENTATION - ##########\n\nImage: {image_file_path}\n")
+    # for layer in layer_to_prune:
+    for ratio in ratios:
 
-    # Generate tokens until you see the stop token
-    stop_token = processor.tokenizer.eos_token_id
-    generated_tokens = []
+        input_ids = model_inputs["input_ids"]
+        attention_mask = model_inputs["attention_mask"]
+        pixel_values = model_inputs["pixel_values"]
 
-    for _ in range(max_tokens_to_generate):
-        # Get the model outputs
-        # TODO: remove the labels
-        outputs = model(
-            input_ids=input_ids,
-            pixel_values=pixel_values,
-            attention_mask=attention_mask,
-            kv_cache=kv_cache,
-        )
-        kv_cache = outputs["kv_cache"]
-        next_token_logits = outputs["logits"][:, -1, :]
-        # Sample the next token
-        if do_sample:
-            # Apply temperature
-            next_token_logits = torch.softmax(next_token_logits / temperature, dim=-1)
-            next_token = _sample_top_p(next_token_logits, top_p)
-        else:
-            next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-        assert next_token.size() == (1, 1)
-        next_token = next_token.squeeze(0)  # Remove batch dimension
-        generated_tokens.append(next_token)
-        # Stop if the stop token has been generated
-        if next_token.item() == stop_token:
-            break
-        # Append the next token to the input
-        input_ids = next_token.unsqueeze(-1)
-        attention_mask = torch.cat(
-            [attention_mask, torch.ones((1, 1), device=input_ids.device)], dim=-1
-        )
+        kv_cache = KVCache()
 
-    generated_tokens = torch.cat(generated_tokens, dim=-1)
-    # Decode the generated tokens
-    decoded = processor.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # Generate tokens until you see the stop token
+        stop_token = processor.tokenizer.eos_token_id
+        generated_tokens = []
 
-    print(prompt + decoded)
+        print(f"### Pruning Layer: {layer_to_prune} - Ratio of tokens to keep: {ratio}")
+        for _ in range(max_tokens_to_generate):
+            # Get the model outputs
+            # TODO: remove the labels
+            outputs = model(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                attention_mask=attention_mask,
+                kv_cache=kv_cache,
+                layer_to_prune=layer_to_prune,
+                ratio_tokens_keep = ratio,
+            )
+            kv_cache = outputs["kv_cache"]
+            next_token_logits = outputs["logits"][:, -1, :]
+            # Sample the next token
+            if do_sample:
+                # Apply temperature
+                next_token_logits = torch.softmax(next_token_logits / temperature, dim=-1)
+                next_token = _sample_top_p(next_token_logits, top_p)
+            else:
+                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            assert next_token.size() == (1, 1)
+            next_token = next_token.squeeze(0)  # Remove batch dimension
+            generated_tokens.append(next_token)
+            # Stop if the stop token has been generated
+            if next_token.item() == stop_token:
+                break
+            # Append the next token to the input
+            input_ids = next_token.unsqueeze(-1)
+            attention_mask = torch.cat(
+                [attention_mask, torch.ones((1, 1), device=input_ids.device)], dim=-1
+            )
+
+        generated_tokens = torch.cat(generated_tokens, dim=-1)
+        # Decode the generated tokens
+        decoded = processor.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+        print(f"\n##### Expected answer: {expected_answer}")
+        print(prompt + decoded)
+        print("\n----------------------------------------------------------------\n")
+            
 
 
 def _sample_top_p(probs: torch.Tensor, p: float):
@@ -111,6 +125,9 @@ def main(
     top_p: float = 0.9,
     do_sample: bool = False,
     only_cpu: bool = False,
+    layer_to_prune: int = 3,
+    ratios = [0.9, 0.7, 0.5],
+    expected_answer = "",
 ):
     device = "cpu"
 
@@ -142,6 +159,9 @@ def main(
             temperature,
             top_p,
             do_sample,
+            layer_to_prune,
+            ratios,
+            expected_answer,
         )
 
 
@@ -175,6 +195,7 @@ if __name__ == "__main__":
 
     model_path = f"{HOME}/Desktop/PaliGemma/paligemma-weights/paligemma-3b-pt-224"
     prompt = "'What is this monument called '"
+    expected_answer = "'christ redeemer'"
      
     # image_file_path = f"{HOME}/Desktop/PaliGemma/images/blackcat.png"
     image_file_path = f"{HOME}/Desktop/PaliGemma/images/christ.jpg"
@@ -185,6 +206,10 @@ if __name__ == "__main__":
     do_sample=False
     only_cpu = False
 
+    layer_to_prune = 1 # prune layer 3 on prefill (next layers will also have pruned kvcache)
+    ratios = [0.9, 0.7, 0.5, 0.3, 0.1] #ratio of tokens to keep
+
+
     main(
         model_path=model_path,
         prompt=prompt,
@@ -193,6 +218,9 @@ if __name__ == "__main__":
         temperature=temperature,
         top_p=top_p,
         do_sample=do_sample,
-        only_cpu=only_cpu
+        only_cpu=only_cpu,
+        layer_to_prune=layer_to_prune,
+        ratios=ratios,
+        expected_answer=expected_answer,
     )
 
